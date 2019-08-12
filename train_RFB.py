@@ -11,7 +11,7 @@ import argparse
 import numpy as np
 from torch.autograd import Variable
 import torch.utils.data as data
-from data import VOCroot, COCOroot, VOC_300, VOC_512, COCO_300, COCO_512, COCO_mobile_300, AnnotationTransform, COCODetection, VOCDetection, detection_collate, BaseTransform, preproc
+from data import VOCroot, COCOroot,D2CITYroot,VOC_300, VOC_512, COCO_300, COCO_512, COCO_mobile_300, AnnotationTransform, COCODetection, VOCDetection, detection_collate, BaseTransform, preproc, d2CityDetection, d2CityAnnotationTransform
 from layers.modules import MultiBoxLoss
 from layers.functions import PriorBox
 import time
@@ -24,9 +24,11 @@ parser.add_argument('-v', '--version', default='RFB_vgg',
 parser.add_argument('-s', '--size', default='300',
                     help='300 or 512 input size.')
 parser.add_argument('-d', '--dataset', default='VOC',
-                    help='VOC or COCO dataset')
+                    help='VOC or COCO dataset or d2City')
+parser.add_argument('-r', '--rate', default='6,3,2,1',
+                    help='the rate for aspp')
 parser.add_argument(
-    '--basenet', default='./weights/vgg16_reducedfc.pth', help='pretrained base model')
+    '--basenet', default='./weights/pretrain/vgg16_reducedfc.pth', help='pretrained base model')
 parser.add_argument('--jaccard_threshold', default=0.5,
                     type=float, help='Min Jaccard index for matching')
 parser.add_argument('-b', '--batch_size', default=32,
@@ -62,14 +64,37 @@ if not os.path.exists(args.save_folder):
 if args.dataset == 'VOC':
     train_sets = [('2007', 'trainval'), ('2012', 'trainval')]
     cfg = (VOC_300, VOC_512)[args.size == '512']
+    num_classes = 21
+elif args.dataset == 'd2City':
+    train_sets = ["train"]
+    cfg = (VOC_300, VOC_512)[args.size == '512'] 
+    num_classes = 13
 else:
     train_sets = [('2014', 'train'),('2014', 'valminusminival')]
     cfg = (COCO_300, COCO_512)[args.size == '512']
+    num_classes = 81
+    
 
 if args.version == 'RFB_vgg':
     from models.RFB_Net_vgg import build_net
 elif args.version == 'RFB_E_vgg':
     from models.RFB_Net_E_vgg import build_net
+elif args.version == 'b_2':
+    from models.RFB_aspp_b_2 import build_net
+elif args.version == 'relu_mid':
+    from models.RFB_aspp_relu_mid import build_net
+elif args.version == 'relu_mid_se':
+    from models.RFB_aspp_relu_mid_SE import build_net
+elif args.version == 'relu_mid_se_before':
+    from models.RFB_aspp_relu_mid_SE_before_relu import build_net
+elif args.version == 'relu_not_concat':
+    from models.relu_not_concat import build_net
+elif args.version == 'relu_mid_all_relu':
+    from models.relu_mid_all_relu import build_net
+elif args.version == 'relu_mid_mutil_rate':
+    from models.relu_mid_mutil_rate import build_net
+elif args.version == 'relu_mid_3':
+    from models.RFB_aspp_relu_mid_3 import build_net
 elif args.version == 'RFB_mobile':
     from models.RFB_Net_mobile import build_net
     cfg = COCO_mobile_300
@@ -79,14 +104,16 @@ else:
 img_dim = (300,512)[args.size=='512']
 rgb_means = ((104, 117, 123),(103.94,116.78,123.68))[args.version == 'RFB_mobile']
 p = (0.6,0.2)[args.version == 'RFB_mobile']
-num_classes = (21, 81)[args.dataset == 'COCO']
+#num_classes = (21, 81)[args.dataset == 'COCO']
 batch_size = args.batch_size
 weight_decay = 0.0005
 gamma = 0.1
 momentum = 0.9
 
-net = build_net('train', img_dim, num_classes)
-print(net)
+print("num_classes:{}".format(num_classes),"args",args)
+
+net = build_net('train', img_dim, num_classes,rate=args.rate)
+#print(net)
 if args.resume_net == None:
     base_weights = torch.load(args.basenet)
     print('Loading base network...')
@@ -160,20 +187,24 @@ def train():
     conf_loss = 0
     epoch = 0 + args.resume_epoch
     print('Loading Dataset...')
-
+    
     if args.dataset == 'VOC':
         dataset = VOCDetection(VOCroot, train_sets, preproc(
             img_dim, rgb_means, p), AnnotationTransform())
     elif args.dataset == 'COCO':
         dataset = COCODetection(COCOroot, train_sets, preproc(
             img_dim, rgb_means, p))
+    elif args.dataset == 'd2City':
+        dataset = d2CityDetection(D2CITYroot, train_sets, preproc(
+            img_dim, rgb_means, p), d2CityAnnotationTransform())
     else:
         print('Only VOC and COCO are supported now!')
         return
 
     epoch_size = len(dataset) // args.batch_size
     max_iter = args.max_epoch * epoch_size
-
+    
+    #注意d2City当前采用voc的config
     stepvalues_VOC = (150 * epoch_size, 200 * epoch_size, 250 * epoch_size)
     stepvalues_COCO = (90 * epoch_size, 120 * epoch_size, 140 * epoch_size)
     stepvalues = (stepvalues_VOC,stepvalues_COCO)[args.dataset=='COCO']
@@ -206,7 +237,7 @@ def train():
 
         # load train data
         images, targets = next(batch_iterator)
-        
+        #print("load image:",images.size())
         #print(np.sum([torch.sum(anno[:,-1] == 2) for anno in targets]))
 
         if args.cuda:
@@ -228,16 +259,16 @@ def train():
         loc_loss += loss_l.item()
         conf_loss += loss_c.item()
         load_t1 = time.time()
-        if iteration % 10 == 0:
+        if iteration % 100 == 0:
             print('Epoch:' + repr(epoch) + ' || epochiter: ' + repr(iteration % epoch_size) + '/' + repr(epoch_size)
                   + '|| Totel iter ' +
                   repr(iteration) + ' || L: %.4f C: %.4f||' % (
                 loss_l.item(),loss_c.item()) + 
                 'Batch time: %.4f sec. ||' % (load_t1 - load_t0) + 'LR: %.8f' % (lr))
+            #torch.save(net.state_dict(), args.save_folder+args.version+'_'+args.dataset + '_iterations_'+repr(iteration) + '.pth')
 
     torch.save(net.state_dict(), args.save_folder +
                'Final_' + args.version +'_' + args.dataset+ '.pth')
-
 
 def adjust_learning_rate(optimizer, gamma, epoch, step_index, iteration, epoch_size):
     """Sets the learning rate 

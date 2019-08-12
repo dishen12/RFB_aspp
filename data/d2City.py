@@ -22,18 +22,16 @@ if sys.version_info[0] == 2:
 else:
     import xml.etree.ElementTree as ET
 
-VOC_CLASSES = ( '__background__', # always index 0
-    'aeroplane', 'bicycle', 'bird', 'boat',
-    'bottle', 'bus', 'car', 'cat', 'chair',
-    'cow', 'diningtable', 'dog', 'horse',
-    'motorbike', 'person', 'pottedplant',
-    'sheep', 'sofa', 'train', 'tvmonitor')
+d2City_CLASSES = ( '__background__', # always index 0
+    'car', 'van', 'bus', 'truck',
+    'person', 'bicycle', 'motorcycle', 'open-tricycle', 
+    'closed-tricycle','forklift', 'large-block', 'small-block')
 
 # for making bounding boxes pretty
 COLORS = ((255, 0, 0, 128), (0, 255, 0, 128), (0, 0, 255, 128),
           (0, 255, 255, 128), (255, 0, 255, 128), (255, 255, 0, 128))
 
-
+#待定，之后确定是否去掉
 class VOCSegmentation(data.Dataset):
 
     """VOC Segmentation Dataset Object
@@ -88,26 +86,22 @@ class VOCSegmentation(data.Dataset):
         return len(self.ids)
 
 
-class AnnotationTransform(object):
-
+class d2CityAnnotationTransform(object):
     """Transforms a VOC annotation into a Tensor of bbox coords and label index
     Initilized with a dictionary lookup of classnames to indexes
 
     Arguments:
         class_to_ind (dict, optional): dictionary lookup of classnames -> indexes
-            (default: alphabetic indexing of VOC's 20 classes)
-        keep_difficult (bool, optional): keep difficult instances or not
             (default: False)
         height (int): height
         width (int): width
     """
 
-    def __init__(self, class_to_ind=None, keep_difficult=True):
+    def __init__(self, class_to_ind=None):
         self.class_to_ind = class_to_ind or dict(
-            zip(VOC_CLASSES, range(len(VOC_CLASSES))))
-        self.keep_difficult = keep_difficult
+            zip(d2City_CLASSES, range(len(d2City_CLASSES))))
 
-    def __call__(self, target):
+    def __call__(self, annPath, width, height):
         """
         Arguments:
             target (annotation) : the target annotation to be made usable
@@ -115,30 +109,25 @@ class AnnotationTransform(object):
         Returns:
             a list containing lists of bounding boxes  [bbox coords, class name]
         """
-        res = np.empty((0,5)) 
-        for obj in target.iter('object'):
-            difficult = int(obj.find('difficult').text) == 1
-            if not self.keep_difficult and difficult:
-                continue
-            name = obj.find('name').text.lower().strip()
-            bbox = obj.find('bndbox')
-
-            pts = ['xmin', 'ymin', 'xmax', 'ymax']
+        res = []
+        f_ann = open(annPath,"r")
+        for line in f_ann.readlines():
+            box = line.strip().split(" ")[:4]
+            label = line.strip().split(" ")[4]
             bndbox = []
-            for i, pt in enumerate(pts):
-                cur_pt = int(bbox.find(pt).text) - 1
+            for i,b in enumerate(box):
+                cur_pt = int(float(b)) - 1
                 # scale height or width
-                #cur_pt = cur_pt / width if i % 2 == 0 else cur_pt / height
+                cur_pt = cur_pt / width if i % 2 == 0 else cur_pt / height
                 bndbox.append(cur_pt)
-            label_idx = self.class_to_ind[name]
+            label_idx = self.class_to_ind[label]
             bndbox.append(label_idx)
-            res = np.vstack((res,bndbox))  # [xmin, ymin, xmax, ymax, label_ind]
-            # img_id = target.find('filename').text[:-4]
+            res.append(bndbox)
 
-        return res  # [[xmin, ymin, xmax, ymax, label_ind], ... ]
+        return np.array(res)  # [[xmin, ymin, xmax, ymax, label_ind], ... ]
 
 
-class VOCDetection(data.Dataset):
+class d2CityDetection(data.Dataset):
 
     """VOC Detection Dataset Object
 
@@ -156,38 +145,34 @@ class VOCDetection(data.Dataset):
             (default: 'VOC2007')
     """
 
-    def __init__(self, root, image_sets, preproc=None, target_transform=None,
-                 dataset_name='VOC0712'):
+    def __init__(self, root='/nfs/project/d2_city/public_data/ssd', image_sets=['train'], preproc=None, target_transform=d2CityAnnotationTransform(),
+                 dataset_name='d2City',year=2007):
         self.root = root
         self.image_set = image_sets
         self.preproc = preproc
         self.target_transform = target_transform
         self.name = dataset_name
-        self._annopath = os.path.join('%s', 'Annotations', '%s.xml')
-        self._imgpath = os.path.join('%s', 'JPEGImages', '%s.jpg')
+        self._annopath = os.path.join('%s', 'ann', '%s.txt')
+        self._imgpath = os.path.join('%s', 'video2Frames', '%s.jpg')
+        self._year = year                          #之后写入
         self.ids = list()
-        for (year, name) in image_sets:
-            self._year = year
-            rootpath = os.path.join(self.root, 'VOC' + year)
-            for line in open(os.path.join(rootpath, 'ImageSets', 'Main', name + '.txt')):
-                self.ids.append((rootpath, line.strip()))
+        for seg in image_sets:
+            for line in open(os.path.join(self.root, 'Main', seg + '.txt')):
+                self.ids.append((self.root, line.strip()))
 
     def __getitem__(self, index):
         img_id = self.ids[index]
-        target = ET.parse(self._annopath % img_id).getroot()
-        img = cv2.imread(self._imgpath % img_id, cv2.IMREAD_COLOR)
-        height, width, _ = img.shape
+
+        #target = ET.parse(self._annopath % img_id).getroot()
+        annPath = self._annopath % img_id
+        img = cv2.imread(self._imgpath % img_id)
+        height, width, channels = img.shape
 
         if self.target_transform is not None:
-            target = self.target_transform(target)
-
+            target = self.target_transform(annPath, width, height)
 
         if self.preproc is not None:
             img, target = self.preproc(img, target)
-            #print(img.size())
-
-                    # target = self.target_transform(target, width, height)
-        #print(target.shape)
 
         return img, target
 
@@ -221,8 +206,8 @@ class VOCDetection(data.Dataset):
                 eg: ('001718', [('dog', (96, 13, 438, 332))])
         '''
         img_id = self.ids[index]
-        anno = ET.parse(self._annopath % img_id).getroot()
-        gt = self.target_transform(anno, 1, 1)
+        annPath = self._annopath % img_id
+        gt = self.target_transform(annPath, 1, 1)
         return img_id[1], gt
 
     def pull_tensor(self, index):
@@ -251,22 +236,22 @@ class VOCDetection(data.Dataset):
         self._write_voc_results_file(all_boxes)
         self._do_python_eval(output_dir)
 
-    def _get_voc_results_file_template(self):
+    def _get_d2City_results_file_template(self):
         filename = 'comp4_det_test' + '_{:s}.txt'
         filedir = os.path.join(
-            self.root, 'results', 'VOC' + self._year, 'Main')
+            self.root, 'results', 'Main')
         if not os.path.exists(filedir):
             os.makedirs(filedir)
         path = os.path.join(filedir, filename)
         return path
 
     def _write_voc_results_file(self, all_boxes):
-        for cls_ind, cls in enumerate(VOC_CLASSES):
+        for cls_ind, cls in enumerate(d2City_CLASSES):
             cls_ind = cls_ind 
             if cls == '__background__':
                 continue
             print('Writing {} VOC results file'.format(cls))
-            filename = self._get_voc_results_file_template().format(cls)
+            filename = self._get_d2City_results_file_template().format(cls)
             with open(filename, 'wt') as f:
                 for im_ind, index in enumerate(self.ids):
                     index = index[1]
@@ -280,15 +265,14 @@ class VOCDetection(data.Dataset):
                                 dets[k, 2] + 1, dets[k, 3] + 1))
 
     def _do_python_eval(self, output_dir='output'):
-        rootpath = os.path.join(self.root, 'VOC' + self._year)
-        name = self.image_set[0][1]
+        rootpath = self.root
+        name = self.image_set[0]
         annopath = os.path.join(
                                 rootpath,
-                                'Annotations',
-                                '{:s}.xml')
+                                'ann',
+                                '{:s}.txt')
         imagesetfile = os.path.join(
                                 rootpath,
-                                'ImageSets',
                                 'Main',
                                 name+'.txt')
         cachedir = os.path.join(self.root, 'annotations_cache')
@@ -299,18 +283,18 @@ class VOCDetection(data.Dataset):
         if output_dir is not None and not os.path.isdir(output_dir):
             os.mkdir(output_dir)
         res_csv = open(os.path.join(output_dir,"result.csv"),"w")
-        for i, cls in enumerate(VOC_CLASSES):
+        for i, cls in enumerate(d2City_CLASSES):
 
             if cls == '__background__':
                 continue
-
-            filename = self._get_voc_results_file_template().format(cls)
+            print("class is cls",cls)
+            filename = self._get_d2City_results_file_template().format(cls)
             rec, prec, ap = voc_eval(
                                     filename, annopath, imagesetfile, cls, cachedir, ovthresh=0.5,
                                     use_07_metric=use_07_metric)
             aps += [ap]
-            print('AP for {} = {:.4f}'.format(cls, ap))
             print('{},{:.4f}'.format(cls, ap),file=res_csv)
+            print('AP for {} = {:.4f}'.format(cls, ap))
             if output_dir is not None:
                 with open(os.path.join(output_dir, cls + '_pr.pkl'), 'wb') as f:
                     pickle.dump({'rec': rec, 'prec': prec, 'ap': ap}, f)

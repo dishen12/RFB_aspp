@@ -12,21 +12,34 @@ import pdb
 
 
 def parse_rec(filename):
-    """ Parse a PASCAL VOC xml file """
-    tree = ET.parse(filename)
-    objects = []
-    for obj in tree.findall('object'):
-        obj_struct = {}
-        obj_struct['name'] = obj.find('name').text
-        obj_struct['pose'] = obj.find('pose').text
-        obj_struct['truncated'] = int(obj.find('truncated').text)
-        obj_struct['difficult'] = int(obj.find('difficult').text)
-        bbox = obj.find('bndbox')
-        obj_struct['bbox'] = [int(bbox.find('xmin').text),
-                              int(bbox.find('ymin').text),
-                              int(bbox.find('xmax').text),
-                              int(bbox.find('ymax').text)]
-        objects.append(obj_struct)
+    """ Parse a PASCAL VOC xml file or d2City"""
+    if(filename.lower().endswith(".xml")):
+        tree = ET.parse(filename)
+        objects = []
+        for obj in tree.findall('object'):
+            obj_struct = {}
+            obj_struct['name'] = obj.find('name').text
+            obj_struct['pose'] = obj.find('pose').text
+            obj_struct['truncated'] = int(obj.find('truncated').text)
+            obj_struct['difficult'] = int(obj.find('difficult').text)
+            bbox = obj.find('bndbox')
+            obj_struct['bbox'] = [int(bbox.find('xmin').text),
+                                  int(bbox.find('ymin').text),
+                                  int(bbox.find('xmax').text),
+                                  int(bbox.find('ymax').text)]
+            objects.append(obj_struct)
+    else:
+        f_ann = open(filename,"r")
+        objects = []
+        for line in f_ann.readlines():
+            obj_struct = {}
+            obj_struct['name'] = line.strip().split(" ")[4]
+            obj_struct['pose'] = ""
+            obj_struct['truncated'] = 0
+            obj_struct['difficult'] = 0
+            bbox = line.strip().split(" ")[:4]
+            obj_struct['bbox'] = [int(float(i)) for i in bbox]
+            objects.append(obj_struct)
 
     return objects
 
@@ -127,6 +140,7 @@ def voc_eval(detpath,
     class_recs = {}
     npos = 0
     for imagename in imagenames:
+        #print("imagename is ",imagename,recs.keys())
         R = [obj for obj in recs[imagename] if obj['name'] == classname]
         bbox = np.array([x['bbox'] for x in R])
         difficult = np.array([x['difficult'] for x in R]).astype(np.bool)
@@ -146,13 +160,17 @@ def voc_eval(detpath,
     confidence = np.array([float(x[1]) for x in splitlines])
     BB = np.array([[float(z) for z in x[2:]] for x in splitlines])
 
-        # sort by confidence
+    # sort by confidence
     sorted_ind = np.argsort(-confidence)
     sorted_scores = np.sort(-confidence)
+    #print(BB.shape,sorted_ind)
+    if((BB.shape)[0]==0):
+        print("this classes has not det bbox!!!")
+        #return 0,0,0
     BB = BB[sorted_ind, :]
     image_ids = [image_ids[x] for x in sorted_ind]
 
-        # go down dets and mark TPs and FPs
+    # go down dets and mark TPs and FPs
     nd = len(image_ids)
     tp = np.zeros(nd)
     fp = np.zeros(nd)
@@ -161,7 +179,7 @@ def voc_eval(detpath,
         bb = BB[d, :].astype(float)
         ovmax = -np.inf
         BBGT = R['bbox'].astype(float)
-
+        #print(BBGT,bb)
         if BBGT.size > 0:
             # compute overlaps
             # intersection
@@ -183,13 +201,18 @@ def voc_eval(detpath,
             jmax = np.argmax(overlaps)
 
         if ovmax > ovthresh:
+            #print("overmax bigger than overthresh!")
             if not R['difficult'][jmax]:
+                #print("not difficult!")
                 if not R['det'][jmax]:
                     tp[d] = 1.
                     R['det'][jmax] = 1
                 else:
                     fp[d] = 1.
+            else:
+                print("difficult!!")
         else:
+            #print("overmax smaller than overthresh",ovmax)
             fp[d] = 1.
 
         # compute precision recall

@@ -1,4 +1,4 @@
-"""VOC Dataset Classes
+"""coco Dataset Classes
 
 Original author: Francisco Massa
 https://github.com/fmassa/vision/blob/voc_dataset/torchvision/datasets/voc.py

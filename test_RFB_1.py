@@ -9,8 +9,8 @@ import torch.backends.cudnn as cudnn
 import torchvision.transforms as transforms
 import numpy as np
 from torch.autograd import Variable
-from data import VOCroot,COCOroot,D2CITYroot 
-from data import AnnotationTransform, COCODetection, VOCDetection, BaseTransform, VOC_300,VOC_512,COCO_300,COCO_512, COCO_mobile_300,d2CityDetection, d2CityAnnotationTransform
+from data import VOCroot,COCOroot 
+from data import AnnotationTransform, COCODetection, VOCDetection, BaseTransform, VOC_300,VOC_512,COCO_300,COCO_512, COCO_mobile_300
 
 import torch.utils.data as data
 from layers.functions import Detect,PriorBox
@@ -24,9 +24,7 @@ parser.add_argument('-v', '--version', default='RFB_vgg',
 parser.add_argument('-s', '--size', default='300',
                     help='300 or 512 input size.')
 parser.add_argument('-d', '--dataset', default='VOC',
-                    help='VOC or COCO dataset or d2City')
-parser.add_argument('-r', '--rate', default='6,3,2,1',
-                    help='the rate for aspp')
+                    help='VOC or COCO version')
 parser.add_argument('-m', '--trained_model', default='weights/RFB300_80_5.pth',
                     type=str, help='Trained state_dict file path to open')
 parser.add_argument('--save_folder', default='eval/', type=str,
@@ -51,22 +49,6 @@ if args.version == 'RFB_vgg':
     from models.RFB_Net_vgg import build_net
 elif args.version == 'RFB_E_vgg':
     from models.RFB_Net_E_vgg import build_net
-elif args.version == 'b_2':
-    from models.RFB_aspp_b_2 import build_net
-elif args.version == 'relu_mid':
-    from models.RFB_aspp_relu_mid import build_net
-elif args.version == 'relu_mid_se':
-    from models.RFB_aspp_relu_mid_SE import build_net
-elif args.version == 'relu_mid_se_before':
-    from models.RFB_aspp_relu_mid_SE_before_relu import build_net
-elif args.version == 'relu_not_concat':
-    from models.relu_not_concat import build_net
-elif args.version == 'relu_mid_all_relu':
-    from models.relu_mid_all_relu import build_net
-elif args.version == 'relu_mid_mutil_rate':
-    from models.relu_mid_mutil_rate import build_net
-elif args.version == 'relu_mid_3':
-    from models.RFB_aspp_relu_mid_3 import build_net
 elif args.version == 'RFB_mobile':
     from models.RFB_Net_mobile import build_net
     cfg = COCO_mobile_300
@@ -86,13 +68,7 @@ def test_net(save_folder, net, detector, cuda, testset, transform, max_per_image
         os.mkdir(save_folder)
     # dump predictions and assoc. ground truth to text file for now
     num_images = len(testset)
-    #num_images = 100
-    if(args.dataset == 'VOC'):
-        num_classes = 21
-    elif(args.dataset == 'd2City'):
-        num_classes = 13
-    elif(args.data == 'COCO'):
-        num_classes = 81
+    num_classes = (21, 81)[args.dataset == 'COCO']
     all_boxes = [[[] for _ in range(num_images)]
                  for _ in range(num_classes)]
 
@@ -106,12 +82,11 @@ def test_net(save_folder, net, detector, cuda, testset, transform, max_per_image
         testset.evaluate_detections(all_boxes, save_folder)
         return
 
+
     for i in range(num_images):
-    #for i in range(20):
         img = testset.pull_image(i)
         scale = torch.Tensor([img.shape[1], img.shape[0],
                              img.shape[1], img.shape[0]])
-        #print("scale is ",scale)
         with torch.no_grad():
             x = transform(img).unsqueeze(0)
             if cuda:
@@ -124,10 +99,8 @@ def test_net(save_folder, net, detector, cuda, testset, transform, max_per_image
         detect_time = _t['im_detect'].toc()
         boxes = boxes[0]
         scores=scores[0]
-        
-        #print("init boxes is",boxes)
+
         boxes *= scale
-        #print("scale boxes is",boxes)
         boxes = boxes.cpu().numpy()
         scores = scores.cpu().numpy()
         # scale each detection back up to the image
@@ -167,21 +140,14 @@ def test_net(save_folder, net, detector, cuda, testset, transform, max_per_image
         pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
 
     print('Evaluating detections')
-    print(all_boxes[1])
     testset.evaluate_detections(all_boxes, save_folder)
 
 
 if __name__ == '__main__':
     # load net
     img_dim = (300,512)[args.size=='512']
-    #num_classes = (21, 81)[args.dataset == 'COCO']
-    if(args.dataset == 'VOC'):
-        num_classes = 21
-    elif(args.dataset == 'd2City'):
-        num_classes = 13
-    elif(args.data == 'COCO'):
-        num_classes = 81
-    net = build_net('test', img_dim, num_classes,rate=args.rate)    # initialize detector
+    num_classes = (21, 81)[args.dataset == 'COCO']
+    net = build_net('test', img_dim, num_classes)    # initialize detector
     state_dict = torch.load(args.trained_model)
     # create new OrderedDict that does not contain `module.`
 
@@ -197,19 +163,17 @@ if __name__ == '__main__':
     net.load_state_dict(new_state_dict)
     net.eval()
     print('Finished loading model!')
-    #print(net)
+    print(net)
     # load data
     if args.dataset == 'VOC':
         testset = VOCDetection(
             VOCroot, [('2007', 'test')], None, AnnotationTransform())
-    elif args.dataset == 'd2City':
-        testset = d2CityDetection(D2CITYroot, ["test_min"], None , d2CityAnnotationTransform())
     elif args.dataset == 'COCO':
         testset = COCODetection(
             COCOroot, [('2014', 'minival')], None)
             #COCOroot, [('2015', 'test-dev')], None)
     else:
-        print('Only VOC and COCO and d2City dataset are supported now!')
+        print('Only VOC and COCO dataset are supported now!')
     if args.cuda:
         net = net.cuda()
         cudnn.benchmark = True
